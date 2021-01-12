@@ -30,7 +30,7 @@ func NewHandler(db *database.DB) *Handler {
 func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	thread := c.Param("slug_or_id")
 	t := &models.Thread{}
-	p := models.Posts{}
+	var p []*models.Post
 	if err := c.BindJSON(&p); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, &models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
@@ -54,85 +54,56 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 		return
 	}
 
-	// 404 for users
-	query = "select id, nickname from unnest('{?}'::citext[]) nickname join users using (nickname)"
-	var users []string
-	usersMap := map[string]int{}
-	// 409 for parents
-	var pNeedParent []int
-	checkQuery := "select id, tree from unnest('{?}'::integer[]) id join post using (id) where thread=$1"
-	var values []string
-	parentMap := map[int][]int{}
-
-	for i := range p {
-		users = append(users, p[i].Author)
-
-		if p[i].Parent != 0 {
-			pNeedParent = append(pNeedParent, i)
-			values = append(values, strconv.Itoa(p[i].Parent))
-		}
-	}
-	cu := strings.Replace(query, "?", strings.Join(users, ","), -1)
-	rows, _ := h.repo.Query(context.Background(), cu)
-	for rows.Next() {
-		var id int
-		var nickname string
-		if err := rows.Scan(&id, &nickname); err != nil {
-			log.Fatal("cant scan rows: ", err.Error())
-			return
-		}
-		usersMap[nickname] = id
-	}
-	rows.Close()
-
-	if len(pNeedParent) > 0 {
-		q := strings.Replace(checkQuery, "?", strings.Join(values, ","), -1)
-		rows, _ := h.repo.Query(context.Background(), q, t.Id)
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var tree []int
-			if err := rows.Scan(&id, &tree); err != nil {
-				log.Fatal("cant scan rows: ", err.Error())
-				return
-			}
-			parentMap[id] = tree
-		}
-	}
-
-	// creating without tree
-	insertQuery := "insert into post(author, message, created, parent, forum, thread, tree) values "
-	var postValues []interface{}
+	var insertQuery strings.Builder
+	insertQuery.WriteString("insert into post(author, message, created, parent, tree, forum, thread) values ")
+	postValues := make([]interface{}, 0, len(p)*5)
 	v := 1
 	crt, _ := time.Parse(time.RFC3339Nano, time.Now().Format(time.RFC3339Nano))
 
-	for i, post := range p {
+	var insertFUQuery strings.Builder
+	insertFUQuery.WriteString("insert into forum_users values ")
+	insertUFValues := make([]string, 0, len(p))
+	ufValues := make([]interface{}, 0, len(p)+1)
+	ufValues = append(ufValues, t.Forum)
+
+	for i := range p {
 		p[i].Forum = t.Forum
 		p[i].Thread = int(t.Id)
 
 		if p[i].Parent != 0 {
-			if _, ok := parentMap[p[i].Parent]; !ok {
-				c.JSON(http.StatusConflict, errors.New(fmt.Sprintf("Some parent post in another thread or doesnt exists")))
+			var pid int
+			if err := h.repo.QueryRow(context.Background(), "select id from post where id=$1 and thread=$2", p[i].Parent, p[i].Thread).Scan(&pid); err != nil {
+				c.JSON(http.StatusConflict, errors.New("can't find parent post"))
 				return
-			} else {
-				p[i].Tree = parentMap[p[i].Parent]
 			}
-		} else {
-			p[i].Tree = []int{}
 		}
-		if _, ok := usersMap[p[i].Author]; !ok {
-			c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("User %s doesnt exists", p[i].Author)))
+		var puid int
+		if err := h.repo.QueryRow(context.Background(), "select id from users where nickname=$1", p[i].Author).Scan(&puid); err != nil {
+			c.JSON(http.StatusNotFound, errors.New("can't find post author"))
 			return
 		}
 
-		insertQuery = insertQuery + "($" + strconv.Itoa(v) + ", $" + strconv.Itoa(v+1) + ", $" + strconv.Itoa(v+2) + ", $" + strconv.Itoa(v+3) + ", $" + strconv.Itoa(v+4) + ", $" + strconv.Itoa(v+5) + ", $" + strconv.Itoa(v+6) + ")"
-		if len(p) >= 2 && i < len(p) - 1 {
-			insertQuery += ","
+		insertQuery.WriteString("($" + strconv.Itoa(v) + ", $" + strconv.Itoa(v+1) + ", $" + strconv.Itoa(v+2) + ", $" + strconv.Itoa(v+3) + ",")
+		if p[i].Parent != 0 {
+			insertQuery.WriteString(" array_append((select tree from post where id=$" + strconv.Itoa(v+3) + "), (select last_value from post_id_seq)),")
+		} else {
+			insertQuery.WriteString(" array[(select last_value from post_id_seq)],")
 		}
-		v += 7
-		postValues = append(postValues, post.Author, post.Message, crt, post.Parent, t.Forum, int(t.Id), p[i].Tree)
+		insertQuery.WriteString(" $" + strconv.Itoa(v+4) + "," + " $" + strconv.Itoa(v+5) + ")")
+
+		if i < len(p) - 1 {
+			insertQuery.WriteString(",")
+		}
+		v += 6
+		postValues = append(postValues, p[i].Author, p[i].Message, crt, p[i].Parent, t.Forum, int(t.Id))
+
+		ufValues = append(ufValues, p[i].Author)
+		insertUFValues = append(insertUFValues, "($1, $" + strconv.Itoa(i + 2) + ")")
 	}
-	insertQuery += " returning id, created"
+	insertQuery.WriteString(" returning id, created")
+
+	insertFUQuery.WriteString(strings.Join(insertUFValues, ","))
+	insertFUQuery.WriteString(" on conflict do nothing")
 
 	// ---------------- transaction begin ------------------------------------
 	tx, err := h.repo.Begin(context.Background())
@@ -141,37 +112,22 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	}
 	defer tx.Rollback(context.Background())
 
-	var res [][]interface{}
-	resRows, _ := h.repo.Query(context.Background(), insertQuery, postValues...)
+	resRows, _ := tx.Query(context.Background(), insertQuery.String(), postValues...)
+	idx := 0
 	for resRows.Next() {
-		var id int
-		var tc time.Time
-		if err := resRows.Scan(&id, &tc); err != nil {
+		if err := resRows.Scan(&p[idx].Id, &p[idx].Created); err != nil {
 			log.Fatal("cant insert so big wow sorry such error: ", err.Error())
 		}
-		res = append(res, []interface{}{id, tc})
+		idx++
 	}
 	resRows.Close()
 
-	insertFUQuery := "insert into forum_users values "
-	var ufValues []interface{}
-	ufValues = append(ufValues, t.Forum)
-	if len(res) > 0 {
-		for i := range p {
-			p[i].Id = res[i][0].(int)
-			p[i].Created = res[i][1].(time.Time)
-
-			insertFUQuery += "($1, $" + strconv.Itoa(i + 2) + ")"
-			if i < len(p) - 1 {
-				insertFUQuery += ", "
-			}
-			ufValues = append(ufValues, p[i].Author)
-		}
-	}
-	insertFUQuery += " on conflict do nothing"
-
-	if _, err := h.repo.Exec(context.Background(), "update forum set posts=forum.posts+$1 where slug=$2", len(p), t.Forum); err != nil {
+	if _, err := tx.Exec(context.Background(), "update forum set posts=forum.posts+$1 where slug=$2", len(p), t.Forum); err != nil {
 		log.Fatal("can't add posts to forum row: ", err.Error())
+	}
+
+	if _, err := tx.Exec(context.Background(), insertFUQuery.String(), ufValues...); err != nil {
+		log.Fatal("can't add forum users to forum_users table: ", err.Error())
 	}
 
 	if err := tx.Commit(context.Background()); err != nil {
@@ -179,13 +135,9 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	}
 	// ---------------- transaction end ------------------------------------
 
-	if _, err := h.repo.Exec(context.Background(), insertFUQuery, ufValues...); err != nil {
-		log.Fatal("can't add forum users to forum_users table: ", err.Error())
-	}
-
 	atomic.AddUint32(&counter, uint32(len(p)))
 	if counter == 1500000 {
-		time.Sleep(10 * time.Second)
+		time.Sleep(5 * time.Second)
 		h.repo.Exec(context.Background(),"cluster users using users_nickname_index")
 		h.repo.Exec(context.Background(),"cluster forum using forum_slug_id_index")
 		h.repo.Exec(context.Background(),"cluster thread using thread_forum_created_index")

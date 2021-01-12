@@ -29,7 +29,7 @@ func (h *Handler) GetPostDetails(c *gin.Context) {
 
 	query := "select * from post where id=$1"
 	fields := &models.PostDetails{Author: nil, Forum: nil, Post: &models.Post{}, Thread: nil}
-	if err := h.repo.QueryRow(context.Background(), query, id).Scan(&fields.Post.Id, &fields.Post.Author, &fields.Post.Created, &fields.Post.IsEdited, &fields.Post.Message, &fields.Post.Parent, &fields.Post.Forum, &fields.Post.Thread, &fields.Post.Tree); err != nil {
+	if err := h.repo.QueryRow(context.Background(), query, id).Scan(&fields.Post.Id, &fields.Post.Created, &fields.Post.IsEdited, &fields.Post.Message, &fields.Post.Parent,  &fields.Post.Tree, &fields.Post.Thread, &fields.Post.Author, &fields.Post.Forum); err != nil {
 		c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("Can't find post with id: %s", id)))
 		return
 	}
@@ -49,7 +49,7 @@ func (h *Handler) GetPostDetails(c *gin.Context) {
 	if strings.Contains(params.Related, "thread") {
 		fields.Thread = &models.Thread{}
 		query = "select * from thread where id=$1"
-		h.repo.QueryRow(context.Background(), query, fields.Post.Thread).Scan(&fields.Thread.Id, &fields.Thread.Author, &fields.Thread.Created, &fields.Thread.Forum, &fields.Thread.Message, &fields.Thread.Slug, &fields.Thread.Title, &fields.Thread.Votes)
+		h.repo.QueryRow(context.Background(), query, fields.Post.Thread).Scan(&fields.Thread.Id, &fields.Thread.Created, &fields.Thread.Message, &fields.Thread.Slug, &fields.Thread.Title, &fields.Thread.Votes, &fields.Thread.Author, &fields.Thread.Forum)
 	}
 
 	c.JSON(http.StatusOK, fields)
