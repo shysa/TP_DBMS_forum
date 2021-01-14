@@ -8,7 +8,6 @@ import (
 	"github.com/shysa/TP_DBMS/app/database"
 	"github.com/shysa/TP_DBMS/internal/models"
 	"net/http"
-	"strconv"
 	"strings"
 )
 
@@ -24,11 +23,11 @@ func NewHandler(db *database.DB) *Handler {
 
 func (h *Handler) GetPostDetails(c *gin.Context) {
 	id := c.Param("id")
-	params := &models.Params{}
+	params := models.Params{}
 	_ = c.Bind(&params)
 
 	query := "select * from post where id=$1"
-	fields := &models.PostDetails{Author: nil, Forum: nil, Post: &models.Post{}, Thread: nil}
+	fields := models.PostDetails{Author: nil, Forum: nil, Post: &models.Post{}, Thread: nil}
 	if err := h.repo.QueryRow(context.Background(), query, id).Scan(&fields.Post.Id, &fields.Post.Created, &fields.Post.IsEdited, &fields.Post.Message, &fields.Post.Parent,  &fields.Post.Tree, &fields.Post.Thread, &fields.Post.Author, &fields.Post.Forum); err != nil {
 		c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("Can't find post with id: %s", id)))
 		return
@@ -57,51 +56,25 @@ func (h *Handler) GetPostDetails(c *gin.Context) {
 
 func (h *Handler) UpdatePostDetails(c *gin.Context) {
 	id := c.Param("id")
-	p := &models.Post{}
-	upd := &models.PostUpdate{}
+	p := models.Post{}
+	upd := models.PostUpdate{}
 	if err := c.BindJSON(&upd); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, &models.Error{Error: "[BindJSON]: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
 	}
 
 	// 404
-	query := "select id, message from post where id=$1"
-	if err := h.repo.QueryRow(context.Background(), query, id).Scan(&p.Id, &p.Message); err != nil {
+	query := "select id, message, author, created, isedited, parent, forum, thread, tree from post where id=$1"
+	if err := h.repo.QueryRow(context.Background(), query, id).Scan(&p.Id, &p.Message, &p.Author, &p.Created, &p.IsEdited, &p.Parent, &p.Forum, &p.Thread, &p.Tree); err != nil {
 		c.JSON(http.StatusNotFound, errors.New("can't find post with this id"))
 		return
 	}
 
-	i := 0
-	updQuery := "update post set "
-	var values []interface{}
-
-	if upd.Message != "" {
-		i++
-		updQuery += "message=$" + strconv.Itoa(i)
-		values = append(values, upd.Message)
-
-		if upd.Message != p.Message {
-			i++
-			updQuery += ", isedited=$" + strconv.Itoa(i)
-			values = append(values, true)
-
-			p.Message = upd.Message
+	if upd.Message != "" && upd.Message != p.Message {
+		if err := h.repo.QueryRow(context.Background(), "update post set message=$1, isedited=$2 where id=$3 returning message", upd.Message, true, id).Scan(&p.Message); err != nil {
+			c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("can't find post with id %s", id) ))
+			return
 		}
-	}
-
-	if i == 0 {
-		updQuery = "select author, created, isedited, parent, forum, thread, tree from post"
-	}
-	i++
-	updQuery += " where id=$" + strconv.Itoa(i)
-	if i > 1 {
-		updQuery += " returning author, created, isedited, parent, forum, thread, tree"
-	}
-	values = append(values, id)
-
-	if err := h.repo.QueryRow(context.Background(), updQuery, values...).Scan(&p.Author, &p.Created, &p.IsEdited, &p.Parent, &p.Forum, &p.Thread, &p.Tree); err != nil {
-		c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("can't find post with id %s", id) ))
-		return
 	}
 
 	c.JSON(http.StatusOK, p)

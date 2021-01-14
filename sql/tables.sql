@@ -1,5 +1,12 @@
 CREATE EXTENSION IF NOT EXISTS CITEXT;
 
+drop table if exists users;
+drop table if exists forum;
+drop table if exists forum_users;
+drop table if exists thread;
+drop table if exists post;
+drop table if exists votes;
+
 create table if not exists users
 (
     id       serial primary key,
@@ -56,7 +63,7 @@ create table if not exists post
 );
 create index posts_id_thread_index on post (thread, id);
 create index posts_thread_tree_index on post (thread, tree);
-create index parent_tree_1 on post (id, tree, (tree[1]));
+create index parent_tree_1 on post (tree, (tree[1]));
 
 create table votes
 (

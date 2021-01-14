@@ -20,7 +20,7 @@ func NewHandler(db *database.DB) *Handler {
 }
 
 func (h *Handler) GetServiceStatus(c *gin.Context) {
-	s := &models.Status{}
+	s := models.Status{}
 	query := "select " +
 		"(select count(*) from forum) as f, " +
 		"(select count(*) from post) as p, " +

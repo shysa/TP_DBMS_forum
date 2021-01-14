@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shysa/TP_DBMS/app/database"
 	"github.com/shysa/TP_DBMS/internal/models"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,10 +28,11 @@ func NewHandler(db *database.DB) *Handler {
 
 func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	thread := c.Param("slug_or_id")
-	t := &models.Thread{}
-	var p []*models.Post
+	var t models.Thread
+	p := make([]*models.Post, 0)
+
 	if err := c.BindJSON(&p); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, &models.Error{Error: "[BindJSON]: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
 	}
 
@@ -66,39 +66,32 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	ufValues := make([]interface{}, 0, len(p)+1)
 	ufValues = append(ufValues, t.Forum)
 
-	for i := range p {
+	for i, post := range p {
 		p[i].Forum = t.Forum
 		p[i].Thread = int(t.Id)
 
-		if p[i].Parent != 0 {
+		if post.Parent != 0 {
 			var pid int
-			if err := h.repo.QueryRow(context.Background(), "select id from post where id=$1 and thread=$2", p[i].Parent, p[i].Thread).Scan(&pid); err != nil {
+			if err := h.repo.QueryRow(context.Background(), "select id from post where id=$1 and thread=$2", post.Parent, post.Thread).Scan(&pid); err != nil {
 				c.JSON(http.StatusConflict, errors.New("can't find parent post"))
 				return
 			}
 		}
 		var puid int
-		if err := h.repo.QueryRow(context.Background(), "select id from users where nickname=$1", p[i].Author).Scan(&puid); err != nil {
+		if err := h.repo.QueryRow(context.Background(), "select id from users where nickname=$1", post.Author).Scan(&puid); err != nil {
 			c.JSON(http.StatusNotFound, errors.New("can't find post author"))
 			return
 		}
 
-		insertQuery.WriteString("($" + strconv.Itoa(v) + ", $" + strconv.Itoa(v+1) + ", $" + strconv.Itoa(v+2) + ", $" + strconv.Itoa(v+3) + ",")
-		if p[i].Parent != 0 {
-			insertQuery.WriteString(" array_append((select tree from post where id=$" + strconv.Itoa(v+3) + "), (select last_value from post_id_seq)),")
-		} else {
-			insertQuery.WriteString(" array[(select last_value from post_id_seq)],")
-		}
-		insertQuery.WriteString(" $" + strconv.Itoa(v+4) + "," + " $" + strconv.Itoa(v+5) + ")")
-
+		insertQuery.WriteString(fmt.Sprintf("($%d, $%d, $%d, $%d, array_append((select tree from post where id=$%d), (select last_value from post_id_seq)), $%d, $%d)", v, v+1, v+2, v+3, v+3, v+4, v+5))
 		if i < len(p) - 1 {
 			insertQuery.WriteString(",")
 		}
 		v += 6
-		postValues = append(postValues, p[i].Author, p[i].Message, crt, p[i].Parent, t.Forum, int(t.Id))
+		postValues = append(postValues, post.Author, post.Message, crt, post.Parent, t.Forum, int(t.Id))
 
-		ufValues = append(ufValues, p[i].Author)
-		insertUFValues = append(insertUFValues, "($1, $" + strconv.Itoa(i + 2) + ")")
+		ufValues = append(ufValues, post.Author)
+		insertUFValues = append(insertUFValues, fmt.Sprintf("($1, $%d)", i+2))
 	}
 	insertQuery.WriteString(" returning id, created")
 
@@ -108,7 +101,8 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	// ---------------- transaction begin ------------------------------------
 	tx, err := h.repo.Begin(context.Background())
 	if err != nil {
-		log.Fatal("cant open transaction on creating posts: ", err.Error())
+		fmt.Println("cant open transaction on creating posts: ", err.Error())
+		return
 	}
 	defer tx.Rollback(context.Background())
 
@@ -116,30 +110,33 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	idx := 0
 	for resRows.Next() {
 		if err := resRows.Scan(&p[idx].Id, &p[idx].Created); err != nil {
-			log.Fatal("cant insert so big wow sorry such error: ", err.Error())
+			fmt.Println("cant insert so big wow sorry such error: ", err.Error())
+			return
 		}
 		idx++
 	}
 	resRows.Close()
 
 	if _, err := tx.Exec(context.Background(), "update forum set posts=forum.posts+$1 where slug=$2", len(p), t.Forum); err != nil {
-		log.Fatal("can't add posts to forum row: ", err.Error())
+		fmt.Println("can't add posts to forum row: ", err.Error())
+		return
 	}
 
 	if _, err := tx.Exec(context.Background(), insertFUQuery.String(), ufValues...); err != nil {
-		log.Fatal("can't add forum users to forum_users table: ", err.Error())
+		fmt.Println("can't add forum users to forum_users table: ", err.Error())
+		return
 	}
 
 	if err := tx.Commit(context.Background()); err != nil {
-		log.Fatal("cant commit transaction on creating posts: ", err.Error())
+		fmt.Println("cant commit transaction on creating posts: ", err.Error())
+		return
 	}
 	// ---------------- transaction end ------------------------------------
 
 	atomic.AddUint32(&counter, uint32(len(p)))
-	if counter == 1500000 {
-		time.Sleep(5 * time.Second)
-		h.repo.Exec(context.Background(),"cluster users using users_nickname_index")
-		h.repo.Exec(context.Background(),"cluster forum using forum_slug_id_index")
+	if counter >= 1500000 {
+		h.repo.Exec(context.Background(),"cluster users using users_pkey")
+		h.repo.Exec(context.Background(),"cluster forum using forum_pkey")
 		h.repo.Exec(context.Background(),"cluster thread using thread_forum_created_index")
 		h.repo.Exec(context.Background(),"cluster post using parent_tree_1")
 		h.repo.Exec(context.Background(),"cluster forum_users using forum_users_pkey")
@@ -150,7 +147,7 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 
 func (h *Handler) GetThreadDetails(c *gin.Context) {
 	thread := c.Param("slug_or_id")
-	t := &models.Thread{}
+	t := models.Thread{}
 
 	// 404
 	query := "select id, author, created, forum, message, slug, title, votes from thread where "
@@ -170,8 +167,8 @@ func (h *Handler) GetThreadDetails(c *gin.Context) {
 
 func (h *Handler) UpdateThreadDetails(c *gin.Context) {
 	thread := c.Param("slug_or_id")
-	t := &models.Thread{}
-	upd := &models.ThreadUpdate{}
+	t := models.Thread{}
+	upd := models.ThreadUpdate{}
 	if err := c.BindJSON(&upd); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, &models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
@@ -225,8 +222,8 @@ func (h *Handler) UpdateThreadDetails(c *gin.Context) {
 
 func (h *Handler) GetThreadPosts(c *gin.Context) {
 	thread := c.Param("slug_or_id")
-	t := &models.Thread{}
-	params := &models.Params{
+	t := models.Thread{}
+	params := models.Params{
 		Limit: 100,
 		Desc:  false,
 		Sort:  "flat",
@@ -234,92 +231,100 @@ func (h *Handler) GetThreadPosts(c *gin.Context) {
 	_ = c.Bind(&params)
 
 	// 404
-	query := "select id, forum, slug from thread where "
+	tQuery := "select id, forum, slug from thread where "
 	if _, err := strconv.ParseInt(thread, 10, 64); err != nil {
 		// search by slug
-		query += "slug=$1"
+		tQuery += "slug=$1"
 	} else {
 		// by id
-		query += "id=$1"
+		tQuery += "id=$1"
 	}
-	if err := h.repo.QueryRow(context.Background(), query, thread).Scan(&t.Id, &t.Forum, &t.Slug); err != nil {
+	if err := h.repo.QueryRow(context.Background(), tQuery, thread).Scan(&t.Id, &t.Forum, &t.Slug); err != nil {
 		c.JSON(http.StatusNotFound, errors.New("can't find thread with this id or thread"))
 		return
 	}
 
 	i := 1
 	var values []interface{}
-	query = "select id, author, created, isedited, message, parent, forum, thread, tree from post where thread=$1"
+	var query strings.Builder
+	query.WriteString("select id, author, created, isedited, message, parent, forum, thread, tree from post where thread=$1")
 	if params.Sort == "parent_tree" {
-		query += " and tree[1] in (select tree[1] from post where thread=$1 and array_length(tree,1)=1 "
+		query.WriteString(" and tree[1] in (select tree[1] from post where thread=$1 and array_length(tree,1)=1 ")
 	}
 	values = append(values, t.Id)
 
 	if params.Since != "" {
 		values = append(values, params.Since)
 		i++
-
-		var sign = ""
 		if params.Desc {
-			sign = "<"
+			switch params.Sort {
+			case "flat":
+				query.WriteString(fmt.Sprintf(" and id < $%d", i))
+				break
+			case "tree":
+				query.WriteString(fmt.Sprintf(" and tree < (select tree from post where id=$%d)", i))
+				break
+			case "parent_tree":
+				query.WriteString(fmt.Sprintf(" and tree[1] < (select tree[1] from post where id=$%d)", i))
+				break
+			}
 		} else {
-			sign = ">"
+			switch params.Sort {
+			case "flat":
+				query.WriteString(fmt.Sprintf(" and id > $%d", i))
+				break
+			case "tree":
+				query.WriteString(fmt.Sprintf(" and tree > (select tree from post where id=$%d)", i))
+				break
+			case "parent_tree":
+				query.WriteString(fmt.Sprintf(" and tree[1] > (select tree[1] from post where id=$%d)", i))
+				break
+			}
 		}
-
-		switch params.Sort {
-		case "flat":
-			query += " and id" + sign + "$" + strconv.Itoa(i)
-			break
-		case "tree":
-			query += " and tree" + sign + "(select tree from post where id=$" + strconv.Itoa(i) + ")"
-			break
-		case "parent_tree":
-			query += " and tree[1]" + sign + "(select tree[1] from post where id=$" + strconv.Itoa(i) + ")"
-			break
-		}
-
 	}
-	query += " order by "
+	query.WriteString(" order by ")
 	switch params.Sort {
 	case "flat":
-		query += "id"
+		query.WriteString("id")
 		break
 	case "tree":
-		query += "tree"
+		query.WriteString("tree")
 		break
 	case "parent_tree":
-		query += "tree[1]"
+		query.WriteString("tree[1]")
 		break
 	}
 	if params.Desc {
-		query += " desc"
+		query.WriteString(" desc")
 	}
-	query += " limit " + strconv.Itoa(params.Limit)
+	query.WriteString(fmt.Sprintf(" limit %d", params.Limit))
 	if params.Sort == "parent_tree" {
-		query += ") order by tree[1]"
+		query.WriteString(") order by tree[1]")
 		if params.Desc {
-			query += " desc"
+			query.WriteString(" desc")
 		}
-		query += ", tree"
+		query.WriteString(", tree")
 	}
 
 	pl := models.Posts{}
-	rows, _ := h.repo.Query(context.Background(), query, values...)
-	defer rows.Close()
+	rows, _ := h.repo.Query(context.Background(), query.String(), values...)
 	for rows.Next() {
 		p := models.Post{}
 		if err := rows.Scan(&p.Id, &p.Author, &p.Created, &p.IsEdited, &p.Message, &p.Parent, &p.Forum, &p.Thread, &p.Tree); err != nil {
-			log.Fatal("cant scan rows: ", err.Error())
+			fmt.Println("cant scan rows: ", err.Error())
+			return
 		}
 		pl = append(pl, p)
 	}
+	rows.Close()
+
 	c.JSON(http.StatusOK, pl)
 }
 
 func (h *Handler) VoteThread(c *gin.Context) {
 	thread := c.Param("slug_or_id")
-	t := &models.Thread{}
-	v := &models.Vote{}
+	t := models.Thread{}
+	v := models.Vote{}
 	if err := c.BindJSON(&v); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
@@ -352,7 +357,8 @@ func (h *Handler) VoteThread(c *gin.Context) {
 			")"+
 			"update thread set votes=votes-(select prev-voice from inserting) where id=$2 returning votes", v.Nickname, t.Id, v.Voice,
 	).Scan(&t.Votes); err != nil {
-		log.Fatal("something went wrong on voice for thread: ", err.Error())
+		fmt.Println("something went wrong on voice for thread: ", err.Error())
+		return
 	}
 
 	c.JSON(http.StatusOK, t)

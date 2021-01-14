@@ -27,9 +27,9 @@ func (h *Handler) CreateUser(c *gin.Context) {
 	// TODO: sanitize validate?
 	nickname := c.Param("nickname")
 
-	u := &models.User{}
+	u := models.User{}
 	if err := c.BindJSON(&u); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, &models.Error{Error: "[BindJSON]: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
 	}
 	u.Nickname = nickname
@@ -60,7 +60,7 @@ func (h *Handler) CreateUser(c *gin.Context) {
 func (h *Handler) GetUser(c *gin.Context)  {
 	nickname := c.Param("nickname")
 
-	u := &models.User{}
+	u := models.User{}
 	if err := h.repo.QueryRow(context.Background(),"select nickname, about, email, fullname from users where nickname=$1", nickname).Scan(&u.Nickname, &u.About, &u.Email, &u.Fullname); err != nil {
 		c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("Can't find user with nickname: %s", nickname)))
 		return
@@ -79,12 +79,12 @@ func (h *Handler) UpdateUser(c *gin.Context)  {
 		return
 	}
 
-	u := &models.User{
+	u := models.User{
 		Nickname: nickname,
 	}
 	upd := &models.UserUpdate{}
 	if err := c.BindJSON(&upd); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, &models.Error{Error: "[BindJSON]: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
 	}
 

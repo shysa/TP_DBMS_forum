@@ -11,7 +11,7 @@ import (
 	"github.com/shysa/TP_DBMS/internal/models"
 	"log"
 	"net/http"
-	"strconv"
+	"strings"
 )
 
 type Handler struct {
@@ -25,9 +25,9 @@ func NewHandler(db *database.DB) *Handler {
 }
 
 func (h *Handler) CreateForum(c *gin.Context) {
-	f := &models.Forum{}
+	f := models.Forum{}
 	if err := c.BindJSON(&f); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, &models.Error{Error: "[BindJSON]: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
 	}
 
@@ -55,7 +55,7 @@ func (h *Handler) CreateForum(c *gin.Context) {
 
 func (h *Handler) GetForumDetails(c *gin.Context) {
 	slug := c.Param("slug")
-	f := &models.Forum{}
+	f := models.Forum{}
 
 	if err := h.repo.QueryRow(context.Background(),`select slug, title, "user", posts, threads from forum where slug=$1`, slug).Scan(&f.Slug, &f.Title, &f.User, &f.Posts, &f.Threads); err != nil {
 		c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("Can't find forum with slug: %s", slug)))
@@ -66,25 +66,20 @@ func (h *Handler) GetForumDetails(c *gin.Context) {
 
 func (h *Handler) CreateForumThread(c *gin.Context) {
 	slug := c.Param("slug")
-	t := &models.Thread{}
+	t := models.Thread{}
 	if err := c.BindJSON(&t); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, &models.Error{Error: "[BindJSON]: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.Error{Error: "[BindJSON]: " + err.Error()})
 		return
 	}
 
 	if err := h.repo.QueryRow(context.Background(),
-		"insert into thread(author, created, forum, message, title, slug) " +
-		"values (" +
-		"(select nickname from users u where u.nickname=$1), " +
-		"$2, " +
-		"(select slug from forum f where f.slug=$3), " +
-		"$4, $5, $6) returning id, forum, author",
+		"insert into thread(author, created, forum, message, title, slug) values ((select nickname from users u where u.nickname=$1), $2, (select slug from forum f where f.slug=$3), $4, $5, $6) returning id, forum, author",
 		t.Author, t.Created, slug, t.Message, t.Title, t.Slug).Scan(&t.Id, &t.Forum, &t.Author); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == pgerrcode.UniqueViolation {
 				if err := h.repo.QueryRow(context.Background(),
-					`select id, author, created, forum, message, title, slug from thread where slug=$1`, t.Slug).Scan(&t.Id, &t.Author, &t.Created, &t.Forum, &t.Message, &t.Title, &t.Slug); err != nil {
+					"select id, author, created, forum, message, title, slug from thread where slug=$1", t.Slug).Scan(&t.Id, &t.Author, &t.Created, &t.Forum, &t.Message, &t.Title, &t.Slug); err != nil {
 					fmt.Println(err.Error())
 				}
 				c.JSON(http.StatusConflict, t)
@@ -106,7 +101,7 @@ func (h *Handler) CreateForumThread(c *gin.Context) {
 
 func (h *Handler) GetForumUsers(c *gin.Context) {
 	slug := c.Param("slug")
-	params := &models.Params{
+	params := models.Params{
 		Limit: 100,
 		Desc: false,
 	}
@@ -115,30 +110,27 @@ func (h *Handler) GetForumUsers(c *gin.Context) {
 	i := 1
 	var values []interface{}
 
-	query := "select u.nickname, u.about, u.email, u.fullname from users u join forum_users fu on u.nickname=fu.nickname where fu.forum=$1"
+	var query strings.Builder
+	query.WriteString("select u.nickname, u.about, u.email, u.fullname from users u join forum_users fu on u.nickname=fu.nickname where fu.forum=$1")
 	values = append(values, slug)
 
 	if params.Since != "" {
 		values = append(values, params.Since)
 		i++
-
-		var sign = ""
 		if params.Desc {
-			sign = "<"
+			query.WriteString(fmt.Sprintf(" and fu.nickname < $%d", i))
 		} else {
-			sign = ">"
+			query.WriteString(fmt.Sprintf(" and fu.nickname > $%d", i))
 		}
-		query = query + " and fu.nickname" + sign + "$"+strconv.Itoa(i)
 	}
-	query += " order by fu.nickname"
+	query.WriteString(" order by fu.nickname")
 	if params.Desc {
-		query += " desc"
+		query.WriteString(" desc")
 	}
-	query += " limit " + strconv.Itoa(params.Limit)
+	query.WriteString(fmt.Sprintf(" limit %d", params.Limit))
 
 	ul := models.Users{}
-	rows, _ := h.repo.Query(context.Background(), query, values...)
-	defer rows.Close()
+	rows, _ := h.repo.Query(context.Background(), query.String(), values...)
 	for rows.Next() {
 		u := models.User{}
 		if err := rows.Scan(&u.Nickname, &u.About, &u.Email, &u.Fullname); err != nil {
@@ -146,10 +138,11 @@ func (h *Handler) GetForumUsers(c *gin.Context) {
 		}
 		ul = append(ul, u)
 	}
+	rows.Close()
 
 	if len(ul) == 0 {
 		var existing string
-		if err := h.repo.QueryRow(context.Background(),`select slug from forum where slug=$1`, slug).Scan(&existing); err != nil {
+		if err := h.repo.QueryRow(context.Background(),"select slug from forum where slug=$1", slug).Scan(&existing); err != nil {
 			c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("Can't find forum with slug: %s", slug)))
 			return
 		}
@@ -160,7 +153,7 @@ func (h *Handler) GetForumUsers(c *gin.Context) {
 
 func (h *Handler) GetForumThreads(c *gin.Context) {
 	slug := c.Param("slug")
-	params := &models.Params{
+	params := models.Params{
 		Limit: 100,
 		Desc: false,
 	}
@@ -170,29 +163,26 @@ func (h *Handler) GetForumThreads(c *gin.Context) {
 
 	i := 1
 	var values []interface{}
-	query := "select id, author, created, forum, message, slug, title, votes from thread where forum=$1"
+	var query strings.Builder
+	query.WriteString("select id, author, created, forum, message, slug, title, votes from thread where forum=$1")
 	values = append(values, slug)
 
 	if params.Since != "" {
 		values = append(values, params.Since)
 		i++
-
-		var sign = ""
 		if params.Desc {
-			sign = "<="
+			query.WriteString(fmt.Sprintf(" and created <= $%d", i))
 		} else {
-			sign = ">="
+			query.WriteString(fmt.Sprintf(" and created >= $%d", i))
 		}
-		query = query + " and created" + sign + "$"+strconv.Itoa(i)
 	}
-	query += " order by created"
+	query.WriteString(" order by created")
 	if params.Desc {
-		query += " desc"
+		query.WriteString(" desc")
 	}
-	query += " limit " + strconv.Itoa(params.Limit)
+	query.WriteString(fmt.Sprintf(" limit %d", params.Limit))
 
-	rows, _ := h.repo.Query(context.Background(), query, values...)
-	defer rows.Close()
+	rows, _ := h.repo.Query(context.Background(), query.String(), values...)
 	for rows.Next() {
 		nt := models.Thread{}
 		if err := rows.Scan(&nt.Id, &nt.Author, &nt.Created, &nt.Forum, &nt.Message, &nt.Slug, &nt.Title, &nt.Votes); err != nil {
@@ -200,10 +190,11 @@ func (h *Handler) GetForumThreads(c *gin.Context) {
 		}
 		t = append(t, nt)
 	}
+	rows.Close()
 
 	if len(t) == 0 {
 		var existing int
-		if err := h.repo.QueryRow(context.Background(),`select id from forum where slug=$1`, slug).Scan(&existing); err != nil {
+		if err := h.repo.QueryRow(context.Background(),"select id from forum where slug=$1", slug).Scan(&existing); err != nil {
 			c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("Can't find forum with slug: %s", slug)))
 			return
 		}
