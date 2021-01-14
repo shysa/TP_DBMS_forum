@@ -71,7 +71,7 @@ func (h *Handler) UpdatePostDetails(c *gin.Context) {
 	}
 
 	if upd.Message != "" && upd.Message != p.Message {
-		if err := h.repo.QueryRow(context.Background(), "update post set message=$1, isedited=$2 where id=$3 returning message", upd.Message, true, id).Scan(&p.Message); err != nil {
+		if err := h.repo.QueryRow(context.Background(), "update post set message=$1, isedited=$2 where id=$3 returning message, isedited", upd.Message, true, id).Scan(&p.Message, &p.IsEdited); err != nil {
 			c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("can't find post with id %s", id) ))
 			return
 		}
