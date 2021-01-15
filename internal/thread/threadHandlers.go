@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgerrcode"
 	"github.com/shysa/TP_DBMS/app/database"
 	"github.com/shysa/TP_DBMS/internal/models"
 	"net/http"
@@ -37,7 +39,7 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	}
 
 	// 404 for thread
-	query := "select id, slug, forum from thread where "
+	query := "select id, case slug is null when true then '' else slug end, forum from thread where "
 	if _, err := strconv.ParseInt(thread, 10, 64); err != nil {
 		// search by slug
 		query += "slug=$1"
@@ -134,13 +136,13 @@ func (h *Handler) CreateThreadPosts(c *gin.Context) {
 	// ---------------- transaction end ------------------------------------
 
 	atomic.AddUint32(&counter, uint32(len(p)))
-	if counter >= 1500000 {
-		h.repo.Exec(context.Background(),"cluster users using users_pkey")
-		h.repo.Exec(context.Background(),"cluster forum using forum_pkey")
-		h.repo.Exec(context.Background(),"cluster thread using thread_forum_created_index")
-		h.repo.Exec(context.Background(),"cluster post using parent_tree_1")
-		h.repo.Exec(context.Background(),"cluster forum_users using forum_users_pkey")
-	}
+	//if counter >= 1500000 {
+	//	h.repo.Exec(context.Background(),"cluster users using users_pkey")
+	//	h.repo.Exec(context.Background(),"cluster forum using forum_pkey")
+	//	h.repo.Exec(context.Background(),"cluster thread using thread_forum_created_index")
+	//	h.repo.Exec(context.Background(),"cluster post using parent_tree_1")
+	//	h.repo.Exec(context.Background(),"cluster forum_users using forum_users_pkey")
+	//}
 
 	c.JSON(http.StatusCreated, p)
 }
@@ -150,7 +152,7 @@ func (h *Handler) GetThreadDetails(c *gin.Context) {
 	t := models.Thread{}
 
 	// 404
-	query := "select id, author, created, forum, message, slug, title, votes from thread where "
+	query := "select id, author, created, forum, message, case slug is null when true then '' else slug end, title, votes from thread where "
 	if _, err := strconv.ParseInt(thread, 10, 64); err != nil {
 		// search by slug
 		query += "slug=$1"
@@ -231,7 +233,7 @@ func (h *Handler) GetThreadPosts(c *gin.Context) {
 	_ = c.Bind(&params)
 
 	// 404
-	tQuery := "select id, forum, slug from thread where "
+	tQuery := "select id, forum, case slug is null when true then '' else slug end from thread where "
 	if _, err := strconv.ParseInt(thread, 10, 64); err != nil {
 		// search by slug
 		tQuery += "slug=$1"
@@ -331,7 +333,7 @@ func (h *Handler) VoteThread(c *gin.Context) {
 	}
 
 	// 404
-	query := "select id, author, created, forum, message, slug, title from thread where "
+	query := "select id, author, created, forum, message, case slug is null when true then '' else slug end, title, votes from thread where "
 	if _, err := strconv.ParseInt(thread, 10, 64); err != nil {
 		// search by slug
 		query += "slug=$1"
@@ -339,27 +341,26 @@ func (h *Handler) VoteThread(c *gin.Context) {
 		// by id
 		query += "id=$1"
 	}
-	if err := h.repo.QueryRow(context.Background(), query, thread).Scan(&t.Id, &t.Author, &t.Created, &t.Forum, &t.Message, &t.Slug, &t.Title); err != nil {
+	if err := h.repo.QueryRow(context.Background(), query, thread).Scan(&t.Id, &t.Author, &t.Created, &t.Forum, &t.Message, &t.Slug, &t.Title, &t.Votes); err != nil {
 		c.JSON(http.StatusNotFound, errors.New("can't find thread with this id or thread"))
 		return
 	}
-	if err := h.repo.QueryRow(context.Background(), "select nickname from users where nickname=$1", v.Nickname).Scan(&v.Nickname); err != nil {
-		c.JSON(http.StatusNotFound, errors.New("can't find user for vote"))
-		return
-	}
 
-	if err := h.repo.QueryRow(
-		context.Background(),
-		"with inserting as ("+
-			"insert into votes(nickname, thread, voice) values ($1, $2, $3)"+
-			"on conflict on constraint unique_uservoice_for_thread do update set prev=votes.voice, voice=excluded.voice "+
-			"returning prev, voice"+
-			")"+
-			"update thread set votes=votes-(select prev-voice from inserting) where id=$2 returning votes", v.Nickname, t.Id, v.Voice,
-	).Scan(&t.Votes); err != nil {
-		fmt.Println("something went wrong on voice for thread: ", err.Error())
-		return
+	prev := 0
+	curr := 0
+	if err := h.repo.QueryRow(context.Background(),
+		"insert into votes(nickname, thread, voice) values ((select nickname from users where nickname=$1), $2, $3) on conflict on constraint unique_uservoice_for_thread do update set prev=votes.voice, voice=excluded.voice returning voice, prev",
+		v.Nickname, t.Id, v.Voice).Scan(&curr, &prev); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			if pgErr.Code == pgerrcode.NotNullViolation {
+				// 404 user not found
+				c.JSON(http.StatusNotFound, errors.New(fmt.Sprintf("Can't find user with nickname: %s", v.Nickname)))
+				return
+			}
+		}
 	}
+	t.Votes = t.Votes - (prev - curr)
 
 	c.JSON(http.StatusOK, t)
 }

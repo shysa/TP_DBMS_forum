@@ -72,9 +72,22 @@ func (h *Handler) CreateForumThread(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.QueryRow(context.Background(),
-		"insert into thread(author, created, forum, message, title, slug) values ((select nickname from users u where u.nickname=$1), $2, (select slug from forum f where f.slug=$3), $4, $5, $6) returning id, forum, author",
-		t.Author, t.Created, slug, t.Message, t.Title, t.Slug).Scan(&t.Id, &t.Forum, &t.Author); err != nil {
+	var query strings.Builder
+	query.WriteString("insert into thread(author, created, forum, message, title")
+	var values strings.Builder
+	values.WriteString(") values ((select nickname from users u where u.nickname=$1), $2, (select slug from forum f where f.slug=$3), $4, $5")
+	qValues := make([]interface{}, 0, 6)
+	qValues = append(qValues, t.Author, t.Created, slug, t.Message, t.Title)
+
+	if t.Slug != "" {
+		query.WriteString(", slug")
+		values.WriteString(" , $6")
+		qValues = append(qValues, t.Slug)
+	}
+
+	values.WriteString(") returning id, forum, author")
+
+	if err := h.repo.QueryRow(context.Background(), query.String() + values.String(), qValues...).Scan(&t.Id, &t.Forum, &t.Author); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == pgerrcode.UniqueViolation {
@@ -164,7 +177,7 @@ func (h *Handler) GetForumThreads(c *gin.Context) {
 	i := 1
 	var values []interface{}
 	var query strings.Builder
-	query.WriteString("select id, author, created, forum, message, slug, title, votes from thread where forum=$1")
+	query.WriteString("select id, author, created, forum, message, case slug is null when true then '' else slug end, title, votes from thread where forum=$1")
 	values = append(values, slug)
 
 	if params.Since != "" {

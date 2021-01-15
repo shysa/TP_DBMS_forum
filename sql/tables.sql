@@ -38,14 +38,13 @@ create table if not exists thread
     id      serial primary key,
     created timestamptz not null,
     message text        not null,
-    slug    citext,
+    slug    citext unique,
     title   text,
     votes   integer     not null default 0,
 
     author  citext      not null,
     forum   citext      not null
 );
-create unique index thread_slug_index on thread (slug) where slug <> '';
 create index thread_forum_created_index on thread (forum, created);
 
 create table if not exists post
@@ -67,8 +66,7 @@ create index parent_tree_1 on post (tree, (tree[1]));
 
 create table votes
 (
-    id       serial primary key,
-    thread   integer not null references thread (id),
+    thread   integer not null,
     voice    integer,
     prev     integer not null default 0,
 
@@ -90,6 +88,21 @@ create trigger on_add_forum_thread
     on thread
     for each row
 execute procedure add_forum_thread();
+
+
+create or replace function add_thread_voice() returns trigger as
+$add_thread_voice$
+begin
+    update thread set votes=votes-(new.prev-new.voice) where id=new.thread;
+    return new;
+end;
+$add_thread_voice$ language plpgsql;
+
+create trigger on_add_thread_voice
+    after insert or update
+    on votes
+    for each row
+execute procedure add_thread_voice();
 
 GRANT ALL PRIVILEGES ON DATABASE dbms_db TO dbms_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO dbms_user;

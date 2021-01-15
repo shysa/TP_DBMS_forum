@@ -47,7 +47,7 @@ func (h *Handler) GetPostDetails(c *gin.Context) {
 	}
 	if strings.Contains(params.Related, "thread") {
 		fields.Thread = &models.Thread{}
-		query = "select * from thread where id=$1"
+		query = "select id, created, message, case slug is null when true then '' else slug end, title, votes, author, forum from thread where id=$1"
 		h.repo.QueryRow(context.Background(), query, fields.Post.Thread).Scan(&fields.Thread.Id, &fields.Thread.Created, &fields.Thread.Message, &fields.Thread.Slug, &fields.Thread.Title, &fields.Thread.Votes, &fields.Thread.Author, &fields.Thread.Forum)
 	}
 

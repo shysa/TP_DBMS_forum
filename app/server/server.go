@@ -11,14 +11,13 @@ import (
 	service "github.com/shysa/TP_DBMS/internal/service"
 	thread "github.com/shysa/TP_DBMS/internal/thread"
 	user "github.com/shysa/TP_DBMS/internal/user"
-	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
 )
 
 func New(cfg *config.Config, db *database.DB) *http.Server {
-	gin.SetMode(gin.ReleaseMode)
-	gin.DefaultWriter = ioutil.Discard
+	//gin.SetMode(gin.ReleaseMode)
+	//gin.DefaultWriter = ioutil.Discard
 	router := gin.Default()
 
 	//pprof.Register(router)
